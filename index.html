@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#ffffff" />
+  <title>Lahore Darbar AI Assistant</title>
+  <meta name="description" content="Lahore Darbar AI Ordering Assistant" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%; margin: 0; overflow: hidden;
+      font-family: Inter, Arial, sans-serif; background: #fff;
+    }
+    .topbar {
+      height: 64px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 22px; border-bottom: 1px solid #e9e9e9;
+      background: #fff; position: relative; z-index: 10;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .mark {
+      width: 38px; height: 38px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      background: #f7f3e8; border: 1px solid #ece4cf;
+      font-weight: 800; color: #8b6b1f; font-size: 18px;
+    }
+    .brand-text { min-width: 0; }
+    .title {
+      font-size: 16px; font-weight: 700; color: #181818;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .subtitle { font-size: 12px; color: #777; margin-top: 2px; }
+    .right { display: flex; align-items: center; gap: 12px; }
+    .status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #555; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #1fa463; }
+    #voice-status {
+      display: none; align-items: center; gap: 7px;
+      border: 1px solid #e6e6e6; border-radius: 999px;
+      padding: 7px 11px; font-size: 12px; color: #444; background: #fff;
+    }
+    #voice-status.show { display: flex; }
+    #replay-btn {
+      display: none; border: 1px solid #ddd; background: #fff; color: #222;
+      border-radius: 999px; padding: 7px 12px; font-size: 12px; cursor: pointer;
+    }
+    #replay-btn.show { display: inline-block; }
+    #chat-shell { position: relative; width: 100%; height: calc(100% - 64px); background: #fff; }
+    .bpFab { display: none !important; }
+    .bpWebchat {
+      position: absolute !important; inset: 0 !important;
+      width: 100% !important; height: 100% !important;
+      max-width: none !important; max-height: none !important;
+      border-radius: 0 !important; box-shadow: none !important;
+    }
+    @media (max-width: 640px) {
+      .topbar { height: 56px; padding: 0 12px; }
+      #chat-shell { height: calc(100% - 56px); }
+      .mark { width: 34px; height: 34px; }
+      .status, .subtitle { display: none; }
+      #voice-status { padding: 6px 9px; }
+    }
+  </style>
+
+  <script src="https://cdn.botpress.cloud/webchat/v5.0/inject.js"></script>
+  <script>
+    const TTS_ENDPOINT = "https://lahore-darbar-tts.hello-woviq.workers.dev/tts";
+
+    let lastCustomerInputWasVoice = false;
+    let lastSpokenMessageId = null;
+    let currentAudio = null;
+    let lastAudioBlobUrl = null;
+
+    function setVoiceStatus(text, visible = true) {
+      const el = document.getElementById("voice-status");
+      if (!el) return;
+      el.textContent = text;
+      el.classList.toggle("show", visible);
+    }
+
+    function setReplayVisible(visible) {
+      const btn = document.getElementById("replay-btn");
+      if (!btn) return;
+      btn.classList.toggle("show", visible);
+    }
+
+    function extractText(message) {
+      if (!message || !message.payload) return "";
+      if (typeof message.payload.text === "string") return message.payload.text.trim();
+      return "";
+    }
+
+    async function speakText(text, messageId) {
+      if (!text || text.length > 800) return;
+      if (messageId && messageId === lastSpokenMessageId) return;
+
+      lastSpokenMessageId = messageId || null;
+      setVoiceStatus("Generating voice…", true);
+      setReplayVisible(false);
+
+      try {
+        const res = await fetch(TTS_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text })
+        });
+
+        if (!res.ok) {
+          console.error("TTS failed:", res.status, await res.text());
+          setVoiceStatus("Voice unavailable", true);
+          setTimeout(() => setVoiceStatus("", false), 2500);
+          return;
+        }
+
+        const blob = await res.blob();
+
+        if (lastAudioBlobUrl) URL.revokeObjectURL(lastAudioBlobUrl);
+        lastAudioBlobUrl = URL.createObjectURL(blob);
+
+        if (currentAudio) currentAudio.pause();
+        currentAudio = new Audio(lastAudioBlobUrl);
+        currentAudio.preload = "auto";
+
+        currentAudio.addEventListener("play", () => {
+          setVoiceStatus("AI voice reply playing", true);
+        });
+
+        currentAudio.addEventListener("ended", () => {
+          setVoiceStatus("", false);
+          setReplayVisible(true);
+        });
+
+        currentAudio.addEventListener("error", () => {
+          setVoiceStatus("Voice reply ready", true);
+          setReplayVisible(true);
+        });
+
+        try {
+          await currentAudio.play();
+        } catch (playError) {
+          console.warn("Autoplay blocked:", playError);
+          setVoiceStatus("Voice reply ready", true);
+          setReplayVisible(true);
+        }
+      } catch (error) {
+        console.error("TTS request error:", error);
+        setVoiceStatus("Voice unavailable", true);
+        setTimeout(() => setVoiceStatus("", false), 2500);
+      }
+    }
+
+    window.botpress.on("webchat:initialized", () => {
+      setTimeout(() => window.botpress.open(), 350);
+    });
+
+    window.botpress.on("message", (message) => {
+      console.log("Botpress message:", message);
+
+      if (message.direction === "incoming") {
+        if (message.type === "audio") {
+          lastCustomerInputWasVoice = true;
+          setVoiceStatus("Voice understood", true);
+        } else {
+          lastCustomerInputWasVoice = false;
+          setVoiceStatus("", false);
+          setReplayVisible(false);
+        }
+        return;
+      }
+
+      if (
+        message.direction === "outgoing" &&
+        message.type === "text" &&
+        lastCustomerInputWasVoice
+      ) {
+        const text = extractText(message);
+        if (text) {
+          lastCustomerInputWasVoice = false;
+          speakText(text, message.id);
+        }
+      }
+    });
+
+    window.addEventListener("DOMContentLoaded", () => {
+      document.getElementById("replay-btn")?.addEventListener("click", async () => {
+        if (!currentAudio) return;
+        try {
+          currentAudio.currentTime = 0;
+          await currentAudio.play();
+        } catch (e) {
+          console.error(e);
+        }
+      });
+    });
+  </script>
+
+  <script src="https://files.bpcontent.cloud/2026/09/12/19/20260912192409-98RCQVZG.js" defer></script>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">LD</div>
+      <div class="brand-text">
+        <div class="title">Lahore Darbar AI Assistant</div>
+        <div class="subtitle">Menu • Recommendations • Order assistance</div>
+      </div>
+    </div>
+
+    <div class="right">
+      <div id="voice-status"></div>
+      <button id="replay-btn" type="button">▶ Play voice</button>
+      <div class="status"><span class="dot"></span> Online</div>
+    </div>
+  </header>
+
+  <main id="chat-shell"></main>
+</body>
+</html>
